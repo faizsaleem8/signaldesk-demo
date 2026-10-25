@@ -1,17 +1,20 @@
-name: VYNLT website security
-on: [push, pull_request]
+# Copy to your WEBSITE repository as .github/workflows/vynlt.yml.
+# Put a VYNLT Export JSON or Download insights JSON file at vynlt-report.json.
+# DEMO ONLY: self-contained JSON hashes are not signatures or blockchain proofs.
+# This checks reported observations, not whether they describe the current commit.
+name: VYNLT uploaded report check
+on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
-  security-gate:
+  report-check:
     name: VYNLT security gate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           path: website
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -22,18 +25,65 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci --include=optional
+      - run: npm ci --include=optional --ignore-scripts --no-audit --no-fund
         working-directory: vynlt-tool
-      - run: npm run build
+      - name: Prepare shared VYNLT report rules
         working-directory: vynlt-tool
-      - run: npx playwright install-deps chromium
+        run: |
+          node --input-type=module <<'JS'
+          import { build } from 'esbuild';
+          await build({ stdin: { contents: "export { parseSubmission } from './packages/core/validation'; export { evaluateGate } from './packages/core/gate'; export { canonicalJson, contentHash } from './packages/core/integrity'; export { RULESET_VERSION } from './packages/core';", resolveDir: process.cwd(), loader: 'ts' }, outfile: '.local/report-library.mjs', bundle: true, platform: 'node', format: 'esm', packages: 'external' });
+          JS
+      - name: Read exported report and evaluate its findings
         working-directory: vynlt-tool
-      - run: npm run setup:browser
-        working-directory: vynlt-tool
-      - run: node vynlt-tool/dist/cli/gate.js --repo website --commit "$GITHUB_SHA" --output reports/gate
+        env:
+          REPORT_FILE: ../website/vynlt-report.json
+          RESULT_FILE: ../website/vynlt-report-result.json
+        run: |
+          node --input-type=module <<'JS'
+          import { lstat, readFile, writeFile } from 'node:fs/promises';
+          import { parseSubmission, evaluateGate, canonicalJson, contentHash, RULESET_VERSION } from './.local/report-library.mjs';
+          const limitation = 'Demo report check only: no trusted source signature, live blockchain verification, website/commit binding or freshness verification. A pass describes the uploaded observations only.';
+          let result;
+          try {
+            const info = await lstat(process.env.REPORT_FILE);
+            if (!info.isFile() || info.isSymbolicLink() || info.size > 4 * 1024 * 1024) throw new Error('Use a regular JSON file smaller than 4 MiB.');
+            const uploaded = JSON.parse(await readFile(process.env.REPORT_FILE, 'utf8'));
+            let raw = uploaded;
+            let format = 'raw';
+            if (uploaded?.content) {
+              format = 'frozen-insights';
+              if (uploaded.content.version !== 'vynlt-frozen-insights-v1' || uploaded.id !== uploaded.hash || !/^[a-f0-9]{64}$/.test(uploaded.hash) || await contentHash(uploaded.content) !== uploaded.hash || await contentHash(uploaded.content.originalScan) !== uploaded.content.originalScanHash) throw new Error('Invalid frozen report format or inconsistent content hash.');
+              raw = uploaded.content.originalScan;
+            }
+            if (raw?.rulesetVersion !== RULESET_VERSION) throw new Error('Unsupported report ruleset. Export a compatible report.');
+            // Recompute using shared detection rules. Edited findings/severity cannot
+            // override the uploaded observations. Observations themselves are untrusted.
+            const report = parseSubmission({ scanId: raw.scanId, observation: raw.observation });
+            if (canonicalJson(report) !== canonicalJson(raw)) throw new Error('Report findings, score or metadata disagree with shared VYNLT rules.');
+            const decision = evaluateGate(report);
+            result = { mode: 'uploaded-report-demo', status: decision.blocking.length ? 'blocked' : 'passed', format, policy: decision.policy, reportHash: await contentHash(raw), checkedCommit: process.env.GITHUB_SHA ?? null, commitBound: false, limitation, blocking: decision.blocking.map(f => ({ rule: f.ruleId, severity: f.severity, confidence: f.confidence, title: f.title, fix: f.recommendation })), warnings: decision.warnings.map(f => ({ rule: f.ruleId, severity: f.severity, confidence: f.confidence, title: f.title, fix: f.recommendation })) };
+            process.exitCode = result.status === 'blocked' ? 1 : 0;
+          } catch {
+            result = { mode: 'uploaded-report-demo', status: 'error', commitBound: false, limitation, error: 'Missing, invalid, incompatible or internally inconsistent report. Export VYNLT JSON to vynlt-report.json; PDFs are unsupported. Required headers, DOM and cookie collection must be complete.' };
+            process.exitCode = 2;
+          }
+          await writeFile(process.env.RESULT_FILE, JSON.stringify(result, null, 2));
+          console.log(`VYNLT uploaded report: ${result.status.toUpperCase()}`);
+          console.log(limitation);
+          const rows = [`# VYNLT uploaded report: ${result.status.toUpperCase()}`, '', limitation, '', result.error ?? `${result.blocking.length} blocking findings; ${result.warnings.length} warnings.`, ''];
+          const escape = value => String(value).replace(/[&<>"'`|\[\]()*_!\\]/g, ch => `&#${ch.charCodeAt(0)};`).replace(/[\r\n]/g, ' ');
+          for (const [kind, findings] of [['BLOCK', result.blocking ?? []], ['WARN', result.warnings ?? []]]) {
+            for (const finding of findings) {
+              console.log(`${kind} ${finding.rule}: ${finding.title} — ${finding.fix}`);
+              rows.push(`- **${kind} ${escape(finding.rule)}** ${escape(finding.title)} (${escape(finding.severity)}/${escape(finding.confidence)}). Fix: ${escape(finding.fix)}`);
+            }
+          }
+          if (process.env.GITHUB_STEP_SUMMARY) await writeFile(process.env.GITHUB_STEP_SUMMARY, rows.join('\n') + '\n', { flag: 'a' });
+          JS
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: vynlt-gate-${{ github.sha }}
-          path: website/reports/gate/
+          name: vynlt-uploaded-report-result
+          path: website/vynlt-report-result.json
           retention-days: 7
