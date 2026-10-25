@@ -1,0 +1,13 @@
+{
+  "name": "signaldesk-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/launch.mjs",
+    "demo:insecure": "node scripts/mode.mjs insecure",
+    "demo:secure": "node scripts/mode.mjs secure"
+  }
+}

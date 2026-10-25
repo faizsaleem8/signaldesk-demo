@@ -1,0 +1,39 @@
+name: VYNLT website security
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  security-gate:
+    name: VYNLT security gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: website
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: faizsaleem8/Vylnt
+          ref: c1d3ba308a6a85d964b27e270d8382d0b1ffc527
+          path: vynlt-tool
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --include=optional
+        working-directory: vynlt-tool
+      - run: npm run build
+        working-directory: vynlt-tool
+      - run: npx playwright install-deps chromium
+        working-directory: vynlt-tool
+      - run: npm run setup:browser
+        working-directory: vynlt-tool
+      - run: node vynlt-tool/dist/cli/gate.js --repo website --commit "$GITHUB_SHA" --output reports/gate
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vynlt-gate-${{ github.sha }}
+          path: website/reports/gate/
+          retention-days: 7
