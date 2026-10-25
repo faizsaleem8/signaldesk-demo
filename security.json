@@ -1,1 +1,3 @@
-{ "mode": "insecure" }
+{
+  "mode": "secure"
+}
