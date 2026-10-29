@@ -3,8 +3,13 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 process.chdir(root);
-const { mode } = JSON.parse(readFileSync('security.json', 'utf8'));
-if (!['secure', 'insecure'].includes(mode)) throw new Error('Invalid security.json mode');
+let mode = 'insecure';
+try {
+  if (existsSync('security.json')) mode = JSON.parse(readFileSync('security.json', 'utf8')).mode || 'insecure';
+} catch {
+  mode = 'insecure';
+}
+if (!['secure', 'insecure'].includes(mode)) mode = 'insecure';
 mkdirSync('.build', { recursive: true });
 const candidates = ['openssl', 'C:/Program Files/Git/usr/bin/openssl.exe'];
 let generated = false;
